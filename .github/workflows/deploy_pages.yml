@@ -1,0 +1,125 @@
+﻿name: Build and Deploy the SVIX Monitor
+
+# Runs daily, manually, or when main is updated.
+# The source remains on main.
+# Historical data is stored on monitor-history.
+# The public HTML page is deployed to gh-pages.
+
+on:
+  schedule:
+    - cron: "30 14 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-svix-monitor
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    # Do not deploy from the private course organization.
+    if: github.repository_owner != 'hw-finm-32800'
+    runs-on: ubuntu-latest
+
+    env:
+      TZ: "America/Chicago"
+      HISTORY_BRANCH: monitor-history
+      HISTORY_FILE: svix_monitor_history.csv
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Restore monitor history
+        run: |
+          mkdir -p _output
+          if git fetch --quiet origin "$HISTORY_BRANCH:$HISTORY_BRANCH" 2>/dev/null; then
+            git show "$HISTORY_BRANCH:$HISTORY_FILE" > "_output/$HISTORY_FILE"
+            echo "Restored previous monitor history"
+          else
+            echo "No monitor history branch yet"
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Update the daily monitor
+        id: monitor
+        continue-on-error: true
+        env:
+          DATABENTO_API_KEY: ${{ secrets.DATABENTO_API_KEY }}
+        run: uv run doit latest
+
+      - name: Distinguish data outage from code failure
+        if: steps.monitor.outcome == 'failure'
+        run: |
+          if [ -f _output/SOURCE_UNAVAILABLE ]; then
+            echo "::warning::$(head -1 _output/SOURCE_UNAVAILABLE) Yesterday's site remains available."
+          else
+            echo "::error::Monitor pipeline failed. Check the workflow logs."
+            exit 1
+          fi
+
+      - name: Configure git identity
+        if: steps.monitor.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Record new sessions on monitor-history
+        if: steps.monitor.outcome == 'success'
+        run: |
+          HISTORY="$RUNNER_TEMP/history"
+
+          if git show-ref --quiet "refs/heads/$HISTORY_BRANCH"; then
+            git worktree add "$HISTORY" "$HISTORY_BRANCH"
+          else
+            git worktree add --orphan -b "$HISTORY_BRANCH" "$HISTORY"
+          fi
+
+          cp "_output/$HISTORY_FILE" "$HISTORY/"
+
+          cd "$HISTORY"
+          git add "$HISTORY_FILE"
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Monitor: through $(tail -n 1 "$HISTORY_FILE" | cut -d, -f1)"
+          fi
+
+          git push origin "$HISTORY_BRANCH"
+
+      - name: Stage the public monitor page
+        if: steps.monitor.outcome == 'success'
+        run: |
+          SITE="$RUNNER_TEMP/site"
+          mkdir -p "$SITE"
+
+          cp -r _output/monitor_page/. "$SITE/"
+          touch "$SITE/.nojekyll"
+
+      - name: Deploy to gh-pages
+        if: steps.monitor.outcome == 'success'
+        run: |
+          # Keep the public branch to one commit containing the page.
+          git checkout --orphan gh-pages
+
+          # Remove tracked and untracked build content.
+          git rm -rf --quiet .
+          git clean -fdx --quiet
+
+          # Copy only the staged public website.
+          cp -r "$RUNNER_TEMP/site/." .
+
+          git add -A
+          git commit -m "Deploy SVIX monitor $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push --force origin gh-pages
+
+
