@@ -1,0 +1,17 @@
+[project]
+name = "SVIX Daily Monitor History"
+description = "Derived daily E-mini S&P 500 option-implied variance and crash-probability estimates, published from the FINM 32800 HW3 monitor."
+
+[dataframes.svix_monitor_history]
+name = "Daily SVIX and Crash Probability History"
+description = "One row per processed trading session: annualized 30-day SVIX, VIX, and model-based probabilities of a 20% index decline."
+path = "svix_monitor_history.csv"
+date_col = "date"
+docs = """Only derived quantities are published here, not licensed individual option settlements.
+svix_30 and vix are in annualized volatility points; p_star_20, p_log_20,
+and p_power_20 are fractions between zero and one and refer to the
+option expiry reflected in days_used, not invariably exactly 30 calendar days.
+These are option-implied, model-dependent estimates, not realized crash frequencies.
+This branch stores a daily appended history; consumers should pin the git
+commit and the content hash of this file with ChartBook before building reports.
+"""
